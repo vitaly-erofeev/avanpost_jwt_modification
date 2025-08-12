@@ -1,0 +1,10 @@
+# .traefik.yml
+displayName: Avanpost JWT Modification
+type: middleware
+import: github.com/vitaly-erofeev/avanpost_jwt_modification
+summary: >
+  Middleware для проверки токена Avanpost, получения user_id и генерации нового JWT
+  с добавленными кастомными клеймами для проксирования на backend.
+testData:
+  avanpost_jwks: "https://avanpost.example.com/.well-known/jwks.json"
+  local_priv_key: "/keys/local.key"
