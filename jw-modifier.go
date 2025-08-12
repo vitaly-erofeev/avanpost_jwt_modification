@@ -19,7 +19,11 @@ type Config struct {
 }
 
 func CreateConfig() *Config {
-	return &Config{}
+	return &Config{
+		AvanpostJWKS: "https://gitlab.com/oauth/discovery/keys",
+		LocalPrivKey: "./keys/private_key.pem",
+		UserService:  "http://localhost:3000",
+	}
 }
 
 type JWTTranslator struct {
