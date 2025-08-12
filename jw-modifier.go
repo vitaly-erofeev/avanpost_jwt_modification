@@ -83,14 +83,6 @@ func (j *JWTTranslator) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// тут вместо http-запроса можно сделать кеш или прямую работу с БД
-	userID := getUserID(sub)
-	if userID == "" {
-		rw.WriteHeader(http.StatusUnauthorized)
-		rw.Write([]byte("user not found"))
-		return
-	}
-
 	privateKey, err := os.ReadFile(j.localPrivateKeyPath)
 	if err != nil {
 		rw.WriteHeader(http.StatusUnauthorized)
@@ -104,13 +96,15 @@ func (j *JWTTranslator) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	// тут вместо http-запроса можно сделать кеш или прямую работу с БД
+	user := getUserData(sub)
 
 	newClaims := jwt.MapClaims{
-		"user_id": userID,
-		"sub":     sub,
-		"iat":     time.Now().Unix(),
-		"exp":     time.Now().Add(time.Hour).Unix(),
-		"iss":     "local-gateway",
+		"user": user,
+		"sub":  sub,
+		"iat":  time.Now().Unix(),
+		"exp":  time.Now().Add(time.Hour).Unix(),
+		"iss":  "local-gateway",
 	}
 
 	newToken := jwt.NewWithClaims(jwt.SigningMethodRS256, newClaims)
@@ -126,8 +120,13 @@ func (j *JWTTranslator) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	j.next.ServeHTTP(rw, req)
 }
 
-func getUserID(sub string) string {
+type User struct {
+	id     int
+	RoleId int `json:"role_id"`
+}
+
+func getUserData(sub string) User {
 	// здесь должен быть запрос к твоему сервису/БД
 	// можно через http.Get(service + "/users/by-sub/" + sub)
-	return "12345" // временно заглушка
+	return User{id: 1, RoleId: 1}
 }
