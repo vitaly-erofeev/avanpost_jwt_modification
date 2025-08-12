@@ -13,56 +13,42 @@ import (
 )
 
 type Config struct {
-	AvanpostJWKS string `json:"avanpost_jwks,omitempty"`
-	LocalPrivKey string `json:"local_priv_key,omitempty"`
-	UserService  string `json:"user_service,omitempty"`
+	Key string `json:"key,omitempty"`
+	Sso string `json:"sso,omitempty"`
 }
 
 func CreateConfig() *Config {
 	return &Config{
-		AvanpostJWKS: "",
-		LocalPrivKey: "",
-		UserService:  "",
+		Key: "",
+		Sso: "",
 	}
 }
 
 type JWTTranslator struct {
-	next         http.Handler
-	avanpostJWKs *keyfunc.JWKS
-	localPrivKey []byte
-	userService  string
+	next                http.Handler
+	JWKs                *keyfunc.JWKS
+	localPrivateKeyPath string
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
-	os.Stdout.WriteString("avanpostJWKs " + config.AvanpostJWKS + "\n")
-	os.Stdout.WriteString("LocalPrivKey " + config.LocalPrivKey + "\n")
-	os.Stdout.WriteString("UserService " + config.UserService + "\n")
+	fmt.Printf("Creating plugin: %s instance: %+v, ctx: %+v\n", name, *config, ctx)
 
-	if len(config.AvanpostJWKS) == 0 {
-		return nil, fmt.Errorf("avanpost_jwks not defined")
+	if len(config.Key) == 0 {
+		return nil, fmt.Errorf("key not defined")
 	}
-	if len(config.LocalPrivKey) == 0 {
-		return nil, fmt.Errorf("local_priv_key not defined")
-	}
-	if len(config.UserService) == 0 {
-		return nil, fmt.Errorf("user_service not defined")
+	if len(config.Sso) == 0 {
+		return nil, fmt.Errorf("sso not defined")
 	}
 
-	jwks, err := keyfunc.Get(config.AvanpostJWKS, keyfunc.Options{})
+	jwks, err := keyfunc.Get(config.Sso, keyfunc.Options{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get Avanpost JWKS: %v", err)
-	}
-
-	privKey, err := os.ReadFile(config.LocalPrivKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load private key: %v", err)
+		return nil, fmt.Errorf("failed to get JWKS: %v", err)
 	}
 
 	return &JWTTranslator{
-		next:         next,
-		avanpostJWKs: jwks,
-		localPrivKey: privKey,
-		userService:  config.UserService,
+		next:                next,
+		JWKs:                jwks,
+		localPrivateKeyPath: config.Key,
 	}, nil
 }
 
@@ -75,7 +61,7 @@ func (j *JWTTranslator) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
-	token, err := jwt.Parse(tokenStr, j.avanpostJWKs.Keyfunc)
+	token, err := jwt.Parse(tokenStr, j.JWKs.Keyfunc)
 	if err != nil || !token.Valid {
 		rw.WriteHeader(http.StatusUnauthorized)
 		rw.Write([]byte("invalid token"))
@@ -91,16 +77,29 @@ func (j *JWTTranslator) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	sub := fmt.Sprintf("%v", claims["sub"])
 
+	if len(sub) == 0 {
+		rw.WriteHeader(http.StatusUnauthorized)
+		rw.Write([]byte("invalid claims"))
+		return
+	}
+
 	// тут вместо http-запроса можно сделать кеш или прямую работу с БД
-	userID := getUserID(j.userService, sub)
+	userID := getUserID(sub)
 	if userID == "" {
 		rw.WriteHeader(http.StatusUnauthorized)
 		rw.Write([]byte("user not found"))
 		return
 	}
 
+	privateKey, err := os.ReadFile(j.localPrivateKeyPath)
+	if err != nil {
+		rw.WriteHeader(http.StatusUnauthorized)
+		rw.Write([]byte("failed to read private key"))
+		return
+	}
+
 	// создаем новый токен
-	privKey, err := jwt.ParseRSAPrivateKeyFromPEM(j.localPrivKey)
+	privKey, err := jwt.ParseRSAPrivateKeyFromPEM(privateKey)
 	if err != nil {
 		rw.WriteHeader(http.StatusInternalServerError)
 		return
@@ -127,7 +126,7 @@ func (j *JWTTranslator) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	j.next.ServeHTTP(rw, req)
 }
 
-func getUserID(service, sub string) string {
+func getUserID(sub string) string {
 	// здесь должен быть запрос к твоему сервису/БД
 	// можно через http.Get(service + "/users/by-sub/" + sub)
 	return "12345" // временно заглушка

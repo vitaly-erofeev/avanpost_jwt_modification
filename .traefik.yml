@@ -6,6 +6,5 @@ summary: >
   Middleware для проверки токена Avanpost, получения user_id и генерации нового JWT
   с добавленными кастомными клеймами для проксирования на backend.
 testData:
-  avanpost_jwks: "https://gitlab.com/oauth/discovery/keys"
-  local_priv_key: "./keys/local_priv_key.pem"
-  user_service: "http://local"
+  sso: "https://gitlab.com/oauth/discovery/keys"
+  key: "./keys/local_priv_key.pem"
