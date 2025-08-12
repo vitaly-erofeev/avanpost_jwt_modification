@@ -13,16 +13,16 @@ import (
 )
 
 type Config struct {
-	AvanpostJWKS string `json:"avanpost_jwks"`
-	LocalPrivKey string `json:"local_priv_key"`
-	UserService  string `json:"user_service"`
+	AvanpostJWKS string `json:"avanpost_jwks,omitempty"`
+	LocalPrivKey string `json:"local_priv_key,omitempty"`
+	UserService  string `json:"user_service,omitempty"`
 }
 
 func CreateConfig() *Config {
 	return &Config{
-		AvanpostJWKS: "https://gitlab.com/oauth/discovery/keys",
-		LocalPrivKey: "./keys/private_key.pem",
-		UserService:  "http://localhost:3000",
+		AvanpostJWKS: "",
+		LocalPrivKey: "",
+		UserService:  "",
 	}
 }
 
@@ -34,6 +34,20 @@ type JWTTranslator struct {
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
+	os.Stdout.WriteString("avanpostJWKs " + config.AvanpostJWKS + "\n")
+	os.Stdout.WriteString("LocalPrivKey " + config.LocalPrivKey + "\n")
+	os.Stdout.WriteString("UserService " + config.UserService + "\n")
+
+	if len(config.AvanpostJWKS) == 0 {
+		return nil, fmt.Errorf("avanpost_jwks not defined")
+	}
+	if len(config.LocalPrivKey) == 0 {
+		return nil, fmt.Errorf("local_priv_key not defined")
+	}
+	if len(config.UserService) == 0 {
+		return nil, fmt.Errorf("user_service not defined")
+	}
+
 	jwks, err := keyfunc.Get(config.AvanpostJWKS, keyfunc.Options{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get Avanpost JWKS: %v", err)
