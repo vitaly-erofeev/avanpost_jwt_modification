@@ -8,3 +8,4 @@ summary: >
 testData:
   avanpost_jwks: "https://avanpost.example.com/.well-known/jwks.json"
   local_priv_key: "/keys/local.key"
+  user_service: "http://local"
