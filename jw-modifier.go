@@ -81,7 +81,7 @@ func (j *JWTTranslator) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 	token, err := jwt.Parse(tokenStr, j.JWKs.Keyfunc)
-	if err != nil || token == nil || !token.Valid {
+	if token == nil {
 		http.Error(rw, "invalid token", http.StatusUnauthorized)
 		return
 	}
@@ -152,7 +152,7 @@ func (j *JWTTranslator) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	req.Header.Set("Authorization", "Bearer "+signed)
+	req.Header.Set("Authorization", signed)
 	j.next.ServeHTTP(rw, req)
 }
 
@@ -183,6 +183,7 @@ func (j *JWTTranslator) getUserData(data UserData) (*User, error) {
 		return nil, fmt.Errorf("failed to create backend request: %w", err)
 	}
 	req.Header.Set("X-Api-Key", j.cfg.ApiKey)
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
