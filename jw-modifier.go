@@ -1,8 +1,11 @@
 package avanpost_jwt_modification
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -10,34 +13,54 @@ import (
 
 	"github.com/MicahParks/keyfunc"
 	"github.com/golang-jwt/jwt/v4"
+	"github.com/redis/go-redis/v9"
 )
 
+var ctx = context.Background()
+
 type Config struct {
-	Key string `json:"key,omitempty"`
-	Sso string `json:"sso,omitempty"`
+	Key         string `json:"key,omitempty"`
+	Sso         string `json:"sso,omitempty"`
+	Redis       string `json:"redis,omitempty"`
+	UserService string `json:"userservice,omitempty"` // URL сервиса для получения пользователя
+	ApiKey      string `json:"apikey,omitempty"`      // API ключ для запроса к бэкенду
 }
 
 func CreateConfig() *Config {
 	return &Config{
-		Key: "",
-		Sso: "",
+		Key:         "",
+		Sso:         "",
+		Redis:       "",
+		UserService: "",
+		ApiKey:      "",
 	}
 }
 
 type JWTTranslator struct {
-	next                http.Handler
-	JWKs                *keyfunc.JWKS
-	localPrivateKeyPath string
+	next        http.Handler
+	JWKs        *keyfunc.JWKS
+	privateKey  []byte
+	redisClient *redis.Client
+	cfg         *Config
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
-	fmt.Printf("Creating plugin: %s instance: %+v, ctx: %+v\n", name, *config, ctx)
+	fmt.Printf("Creating plugin: %s instance: %+v\n", name, *config)
 
-	if len(config.Key) == 0 {
+	if config.Key == "" {
 		return nil, fmt.Errorf("key not defined")
 	}
-	if len(config.Sso) == 0 {
+	if config.Sso == "" {
 		return nil, fmt.Errorf("sso not defined")
+	}
+	if config.Redis == "" {
+		return nil, fmt.Errorf("redis not defined")
+	}
+	if config.UserService == "" {
+		return nil, fmt.Errorf("user_service not defined")
+	}
+	if config.ApiKey == "" {
+		return nil, fmt.Errorf("api_key not defined")
 	}
 
 	jwks, err := keyfunc.Get(config.Sso, keyfunc.Options{})
@@ -45,59 +68,89 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		return nil, fmt.Errorf("failed to get JWKS: %v", err)
 	}
 
+	privateKey, err := os.ReadFile(config.Key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read private key: %v", err)
+	}
+
+	rdb, err := getRedisClient(config.Redis)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to redis: %v", err)
+	}
+
 	return &JWTTranslator{
-		next:                next,
-		JWKs:                jwks,
-		localPrivateKeyPath: config.Key,
+		next:        next,
+		JWKs:        jwks,
+		privateKey:  privateKey,
+		redisClient: rdb,
+		cfg:         config,
 	}, nil
 }
 
 func (j *JWTTranslator) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	authHeader := req.Header.Get("Authorization")
 	if authHeader == "" {
-		rw.WriteHeader(http.StatusUnauthorized)
-		rw.Write([]byte("missing Authorization header"))
+		http.Error(rw, "missing Authorization header", http.StatusUnauthorized)
 		return
 	}
 
 	tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 	token, err := jwt.Parse(tokenStr, j.JWKs.Keyfunc)
-	if err != nil || !token.Valid {
-		rw.WriteHeader(http.StatusUnauthorized)
-		rw.Write([]byte("invalid token"))
+	if err != nil || token == nil || !token.Valid {
+		http.Error(rw, "invalid token", http.StatusUnauthorized)
 		return
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		rw.WriteHeader(http.StatusUnauthorized)
-		rw.Write([]byte("invalid claims"))
+		http.Error(rw, "invalid claims", http.StatusUnauthorized)
 		return
 	}
 
-	sub := fmt.Sprintf("%v", claims["sub"])
-
-	if len(sub) == 0 {
-		rw.WriteHeader(http.StatusUnauthorized)
-		rw.Write([]byte("invalid claims"))
+	sub, ok := claims["sub"].(string)
+	if !ok || sub == "" {
+		http.Error(rw, "invalid sub in claims", http.StatusUnauthorized)
 		return
 	}
 
-	privateKey, err := os.ReadFile(j.localPrivateKeyPath)
+	var name, midName, surName, login, email string
+
+	if v, ok := claims["given_name"].(string); ok {
+		name = v
+	}
+	if v, ok := claims["middle_name"].(string); ok {
+		midName = v
+	}
+	if v, ok := claims["family_name"].(string); ok {
+		surName = v
+	}
+	if v, ok := claims["preferred_username"].(string); ok {
+		login = v
+	}
+	if v, ok := claims["email"].(string); ok {
+		email = v
+	}
+
+	userData := UserData{
+		sub:     sub,
+		Name:    name,
+		MidName: midName,
+		SurName: surName,
+		Login:   login,
+		Email:   email,
+	}
+
+	user, err := j.getUserData(userData)
 	if err != nil {
-		rw.WriteHeader(http.StatusUnauthorized)
-		rw.Write([]byte("failed to read private key"))
+		http.Error(rw, "failed to get user data: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// создаем новый токен
-	privKey, err := jwt.ParseRSAPrivateKeyFromPEM(privateKey)
+	privKey, err := jwt.ParseRSAPrivateKeyFromPEM(j.privateKey)
 	if err != nil {
-		rw.WriteHeader(http.StatusInternalServerError)
+		http.Error(rw, "failed to parse private key", http.StatusInternalServerError)
 		return
 	}
-	// тут вместо http-запроса можно сделать кеш или прямую работу с БД
-	user := getUserData(sub)
 
 	newClaims := jwt.MapClaims{
 		"user": user,
@@ -110,23 +163,84 @@ func (j *JWTTranslator) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	newToken := jwt.NewWithClaims(jwt.SigningMethodRS256, newClaims)
 	signed, err := newToken.SignedString(privKey)
 	if err != nil {
-		rw.WriteHeader(http.StatusInternalServerError)
+		http.Error(rw, "failed to sign new token", http.StatusInternalServerError)
 		return
 	}
 
-	// заменяем заголовок
 	req.Header.Set("Authorization", "Bearer "+signed)
-
 	j.next.ServeHTTP(rw, req)
 }
 
 type User struct {
-	id     int
-	RoleId int `json:"role_id"`
+	ID     int `json:"id"`
+	RoleID int `json:"role_id"`
 }
 
-func getUserData(sub string) User {
-	// здесь должен быть запрос к твоему сервису/БД
-	// можно через http.Get(service + "/users/by-sub/" + sub)
-	return User{id: 1, RoleId: 1}
+type UserData struct {
+	sub     string `json:"sub"`
+	Name    string `json:"name"`
+	MidName string `json:"midname"`
+	SurName string `json:"surname"`
+	Login   string `json:"login"`
+	Email   string `json:"email"`
+}
+
+func (j *JWTTranslator) getUserData(data UserData) (*User, error) {
+	// 1. Проверяем кэш
+	cacheData, err := j.redisClient.Get(ctx, data.sub).Result()
+	if err == nil {
+		var user User
+		if json.Unmarshal([]byte(cacheData), &user) == nil {
+			return &user, nil
+		}
+	}
+
+	// 2. Если нет в кэше — идём на бэкенд
+	// marshall data to json (like json_encode)
+	marshalled, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("impossible to marshall UserData: %s", err)
+	}
+
+	req, err := http.NewRequest("POST", fmt.Sprintf("%s/%s", j.cfg.UserService, data.sub), bytes.NewReader(marshalled))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create backend request: %w", err)
+	}
+	req.Header.Set("X-Api-Key", j.cfg.ApiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("backend request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("backend returned status: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read backend response: %w", err)
+	}
+
+	var user User
+	if err := json.Unmarshal(body, &user); err != nil {
+		return nil, fmt.Errorf("failed to parse backend response: %w", err)
+	}
+
+	// 3. Кладём в кэш (без TTL)
+	res, _ := json.Marshal(user)
+	if err := j.redisClient.Set(ctx, fmt.Sprintf("%s:%s", "user-data", data.sub), res, 0).Err(); err != nil {
+		fmt.Println("failed to cache user:", err)
+	}
+
+	return &user, nil
+}
+
+func getRedisClient(connection string) (*redis.Client, error) {
+	opts, err := redis.ParseURL(connection)
+	if err != nil {
+		return nil, err
+	}
+	return redis.NewClient(opts), nil
 }
