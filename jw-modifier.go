@@ -13,15 +13,11 @@ import (
 
 	"github.com/MicahParks/keyfunc"
 	"github.com/golang-jwt/jwt/v4"
-	"github.com/gomodule/redigo/redis"
 )
-
-var ctx = context.Background()
 
 type Config struct {
 	Key         string `json:"key,omitempty"`
 	Sso         string `json:"sso,omitempty"`
-	Redis       string `json:"redis,omitempty"`
 	UserService string `json:"userservice,omitempty"` // URL сервиса для получения пользователя
 	ApiKey      string `json:"apikey,omitempty"`      // API ключ для запроса к бэкенду
 }
@@ -30,18 +26,16 @@ func CreateConfig() *Config {
 	return &Config{
 		Key:         "",
 		Sso:         "",
-		Redis:       "",
 		UserService: "",
 		ApiKey:      "",
 	}
 }
 
 type JWTTranslator struct {
-	next        http.Handler
-	JWKs        *keyfunc.JWKS
-	privateKey  []byte
-	redisClient redis.Conn
-	cfg         *Config
+	next       http.Handler
+	JWKs       *keyfunc.JWKS
+	privateKey []byte
+	cfg        *Config
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
@@ -52,9 +46,6 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	}
 	if config.Sso == "" {
 		return nil, fmt.Errorf("sso not defined")
-	}
-	if config.Redis == "" {
-		return nil, fmt.Errorf("redis not defined")
 	}
 	if config.UserService == "" {
 		return nil, fmt.Errorf("user_service not defined")
@@ -73,17 +64,11 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		return nil, fmt.Errorf("failed to read private key: %v", err)
 	}
 
-	rdb, err := getRedisClient(config.Redis)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to redis: %v", err)
-	}
-
 	return &JWTTranslator{
-		next:        next,
-		JWKs:        jwks,
-		privateKey:  privateKey,
-		redisClient: rdb,
-		cfg:         config,
+		next:       next,
+		JWKs:       jwks,
+		privateKey: privateKey,
+		cfg:        config,
 	}, nil
 }
 
@@ -186,16 +171,7 @@ type UserData struct {
 }
 
 func (j *JWTTranslator) getUserData(data UserData) (*User, error) {
-	// 1. Проверяем кэш
-	cacheData, err := redis.String(j.redisClient.Do("GET", data.sub))
-	if err == nil {
-		var user User
-		if json.Unmarshal([]byte(cacheData), &user) == nil {
-			return &user, nil
-		}
-	}
-
-	// 2. Если нет в кэше — идём на бэкенд
+	// идём на бэкенд
 	// marshall data to json (like json_encode)
 	marshalled, err := json.Marshal(data)
 	if err != nil {
@@ -228,19 +204,5 @@ func (j *JWTTranslator) getUserData(data UserData) (*User, error) {
 		return nil, fmt.Errorf("failed to parse backend response: %w", err)
 	}
 
-	// 3. Кладём в кэш (без TTL)
-	res, _ := json.Marshal(user)
-	if _, err := j.redisClient.Do("SET", fmt.Sprintf("%s:%s", "user-data", data.sub), res); err != nil {
-		return nil, fmt.Errorf("failed to cache user: %s", err)
-	}
-
 	return &user, nil
-}
-
-func getRedisClient(connection string) (redis.Conn, error) {
-	opts, err := redis.Dial("tcp", connection)
-	if err != nil {
-		return nil, err
-	}
-	return opts, nil
 }
