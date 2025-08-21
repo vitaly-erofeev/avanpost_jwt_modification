@@ -13,7 +13,7 @@ import (
 
 	"github.com/MicahParks/keyfunc"
 	"github.com/golang-jwt/jwt/v4"
-	"github.com/redis/go-redis/v9"
+	"github.com/gomodule/redigo/redis"
 )
 
 var ctx = context.Background()
@@ -40,7 +40,7 @@ type JWTTranslator struct {
 	next        http.Handler
 	JWKs        *keyfunc.JWKS
 	privateKey  []byte
-	redisClient *redis.Client
+	redisClient redis.Conn
 	cfg         *Config
 }
 
@@ -187,7 +187,7 @@ type UserData struct {
 
 func (j *JWTTranslator) getUserData(data UserData) (*User, error) {
 	// 1. Проверяем кэш
-	cacheData, err := j.redisClient.Get(ctx, data.sub).Result()
+	cacheData, err := redis.String(j.redisClient.Do("GET", data.sub))
 	if err == nil {
 		var user User
 		if json.Unmarshal([]byte(cacheData), &user) == nil {
@@ -230,17 +230,17 @@ func (j *JWTTranslator) getUserData(data UserData) (*User, error) {
 
 	// 3. Кладём в кэш (без TTL)
 	res, _ := json.Marshal(user)
-	if err := j.redisClient.Set(ctx, fmt.Sprintf("%s:%s", "user-data", data.sub), res, 0).Err(); err != nil {
-		fmt.Println("failed to cache user:", err)
+	if _, err := j.redisClient.Do("SET", fmt.Sprintf("%s:%s", "user-data", data.sub), res); err != nil {
+		return nil, fmt.Errorf("failed to cache user: %s", err)
 	}
 
 	return &user, nil
 }
 
-func getRedisClient(connection string) (*redis.Client, error) {
-	opts, err := redis.ParseURL(connection)
+func getRedisClient(connection string) (redis.Conn, error) {
+	opts, err := redis.Dial("tcp", connection)
 	if err != nil {
 		return nil, err
 	}
-	return redis.NewClient(opts), nil
+	return opts, nil
 }
