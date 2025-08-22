@@ -3,8 +3,10 @@ displayName: Avanpost JWT Modification
 type: middleware
 import: github.com/vitaly-erofeev/avanpost_jwt_modification
 summary: >
-  Middleware для проверки токена Avanpost, получения user_id и генерации нового JWT
+  Middleware для проверки токена Avanpost, получения данных пользователя и генерации нового JWT
   с добавленными кастомными клеймами для проксирования на backend.
 testData:
   sso: "https://gitlab.com/oauth/discovery/keys"
   key: "./keys/local_priv_key.pem"
+  userservice: "http://user-service.local/api/users"
+  apikey: "example-secret-key"

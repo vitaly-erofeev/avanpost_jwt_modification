@@ -6,10 +6,10 @@ This repository contains the plugin implementation and metadata to be used with 
 
 ## Features
 - Validates incoming Bearer tokens against an Avanpost JWKS URL.
-- Extracts `sub` from the validated token.
-- Resolves `user_id` using your user service (stubbed in code for now).
-- Generates a new RS256-signed JWT with claims: `user_id`, `sub`, `iat`, `exp` (+1 hour), `iss`="local-gateway".
-- Replaces `Authorization: Bearer <incoming>` with `Authorization: Bearer <new>` for upstream requests.
+- Extracts `sub` and profile claims from the validated token.
+- Resolves user data from your user service and obtains IDs/roles.
+- Generates a new RS256-signed JWT with claims: `user` (object with IDs/roles), `sub`, `iat`, `exp` (+1 hour), `iss`="local-gateway".
+- Replaces the incoming Authorization header with the new token for upstream requests.
 
 ## Requirements
 - Traefik with plugin support (experimental plugins or Traefik Pilot-style manifest).
@@ -18,9 +18,10 @@ This repository contains the plugin implementation and metadata to be used with 
 ## Configuration
 The plugin exposes the following configuration fields (see `.traefik.yml`):
 
-- `avanpost_jwks` (string): URL to Avanpost JWKS endpoint used to validate incoming JWTs.
-- `local_priv_key` (string): Filesystem path to an RSA private key in PEM format used to sign the new JWT.
-- `user_service` (string): Base URL of your user service to resolve user_id from `sub`.
+- `sso` (string): URL to the Avanpost JWKS endpoint used to validate incoming JWTs.
+- `key` (string): Filesystem path to an RSA private key in PEM format used to sign the new JWT.
+- `userservice` (string): Base URL of your user service to resolve the user by `sub` and profile data. The middleware will POST JSON to `${userservice}/{sub}`.
+- `apikey` (string): API key sent as `X-Api-Key` header to your user service.
 
 Example test data from `.traefik.yml`:
 ```yaml
@@ -29,20 +30,21 @@ displayName: Avanpost JWT Modification
 type: middleware
 import: github.com/vitaly-erofeev/avanpost_jwt_modification
 summary: >
-  Middleware для проверки токена Avanpost, получения user_id и генерации нового JWT
+  Middleware для проверки токена Avanpost, получения данных пользователя и генерации нового JWT
   с добавленными кастомными клеймами для проксирования на backend.
 testData:
-  avanpost_jwks: "https://avanpost.example.com/.well-known/jwks.json"
-  local_priv_key: "/keys/local.key"
-  user_service: "http://local"
+  sso: "https://avanpost.example.com/.well-known/jwks.json"
+  key: "/keys/local.key"
+  userservice: "http://user-service.local/api/users"
+  apikey: "example-secret-key"
 ```
 
 ## How it works (request flow)
 1. Read `Authorization` header (`Bearer <token>`). If missing → 401.
-2. Validate token using JWKS from `avanpost_jwks`. If invalid → 401.
-3. Extract `sub` claim from the validated token.
-4. Resolve `user_id` using `user_service` and `sub` (currently a stub returning `"12345"`). If not found → 401.
-5. Create a new JWT (RS256) signed with `local_priv_key` containing claims `user_id`, `sub`, `iat`, `exp`(+1h), `iss`="local-gateway".
+2. Validate token using JWKS from `sso`. If invalid → 401.
+3. Extract `sub` claim (and profile fields) from the validated token.
+4. Resolve `user` by calling your `userservice` with `X-Api-Key: <apikey>` and payload containing profile data; endpoint: `${userservice}/{sub}`.
+5. Create a new JWT (RS256) signed with `key` containing claims: `user`, `sub`, `iat`, `exp`(+1h), `iss`="local-gateway".
 6. Replace `Authorization` header with the new token and forward to the next handler.
 
 ## Usage with Traefik (file provider example)
@@ -55,9 +57,10 @@ http:
     avanpost-jwt-mod:
       plugin:
         avanpost_jwt_modification:
-          avanpost_jwks: "https://avanpost.example.com/.well-known/jwks.json"
-          local_priv_key: "/run/secrets/local.key"   # path inside Traefik container
-          user_service: "http://user-service:8080"
+          sso: "https://avanpost.example.com/.well-known/jwks.json"
+          key: "/run/secrets/local.key"   # path inside Traefik container
+          userservice: "http://user-service:8080/api/users"
+          apikey: "example-secret-key"
 
   routers:
     api:
@@ -90,10 +93,10 @@ If you need a test key:
 openssl genrsa -out local.key 2048
 openssl rsa -in local.key -pubout -out local.pub
 ```
-Mount `local.key` into the Traefik container and set `local_priv_key` to its path.
+Mount `local.key` into the Traefik container and set `key` to its path.
 
 ## Local development
-- The function `getUserID` is currently a stub returning `"12345"`. Replace it with an HTTP call or database lookup as appropriate for your environment.
+- The function `getUserData` performs an HTTP POST to your backend. Adjust the URL shape, payload, and returned JSON to match your environment.
 - Build checks:
 ```bash
 go build ./...
@@ -105,9 +108,9 @@ go build ./...
 - 500 Internal Server Error: issues parsing the private key or signing the token.
 
 ## Security notes
-- Store `local_priv_key` securely (e.g., Docker secret or Kubernetes secret) and restrict file permissions.
+- Store the private `key` securely (e.g., Docker secret or Kubernetes secret) and restrict file permissions.
 - Ensure time synchronization for correct `iat`/`exp` handling and signature validation.
-- Validate and sanitize responses from your `user_service` before including them in JWT claims.
+- Validate and sanitize responses from your `userservice` before including them in JWT claims.
 
 ## License
 This project’s license is not specified. Add a LICENSE file if you need to define usage terms.
